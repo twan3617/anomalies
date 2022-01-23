@@ -5,3 +5,9 @@ bookshelf/code/building_features.npy
 bookshelf/code/building_features_seq.npy
 bookshelf/code/building_MP_CACs.npy
 bookshelf/code/test_initial_data.npy
+bookshelf/code/streaming/building_features.npy
+bookshelf/code/streaming/building_features_seq.npy
+bookshelf/code/streaming/Building_Model.mat
+bookshelf/code/streaming/building_MP_CACs.npy
+bookshelf/code/streaming/df_list.txt
+bookshelf/code/streaming/test_initial_data.npy
