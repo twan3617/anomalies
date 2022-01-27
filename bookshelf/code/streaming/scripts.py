@@ -45,7 +45,7 @@ def exp_list_process(data_dict, cases, num_healthy):
     
     return df_list 
 
-def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, tol):
+def welch_vmd(df_list, signal_length=8192, nperseg=1024, fs=1600, vmd=0, alpha=0, tau=0, DC=0, init=0, tol=0):
     '''
     Input: 
     data: df_list, a dict with Sensorn as key and all of the data (including labels).
@@ -54,10 +54,12 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
     In terms of the data pipeline, this should be placed after the correct experimental data has been pulled out of Building_Model.mat into df_list. Just iterate over the number of sensors. 
     This gives us flexibility in case we want to experiment with different combinations of normal/anomalous data etc. 
     '''  
-    first_item = next(iter(df_list.values()))
-    num_experiments = len(first_item)
+
     
     if vmd >= 1: 
+        first_item = next(iter(df_list.values()))
+        num_experiments = len(first_item)
+
         num_sensors = len(df_list.keys())
         building_features = dict()
         for sensor_num in range(1,num_sensors+1):
@@ -87,12 +89,18 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
         return building_features
     
     if vmd == 0: 
+        # if df_list contains other things 
+        df_list = df_list.iloc[:,:8192]
+
         building_features = dict()
         welch_list = []
 
+        num_experiments = len(df_list)
+        # note: df_list might be df_list['Sensor1'], say,
+
         for i in range(num_experiments):
             experiment_str = f'Experiment{i+1}'
-            data_row = df_list.iloc[i,:]
+            data_row = df_list.iloc[i,:8192]
             data_row_demeaned = data_row - np.mean(data_row) # Remove "DC" component (i.e. de-mean)
             
             pxx = welch(data_row_demeaned, fs=1600, nperseg=nperseg) # Returns len 2 tuple
@@ -101,13 +109,15 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
             building_features[experiment_str] = np.array(welch_list)
 
             welch_list.clear()
+        return building_features
 
 
 def data_sequencing(building_features, vmd):
-    num_sensors= len(building_features.keys())
-    num_experiments = len(building_features['Sensor1'].keys())
 
     if vmd >= 1:
+        num_sensors= len(building_features.keys())
+        num_experiments = len(building_features['Sensor1'].keys())
+
         building_features_seq = dict()
         for i in range(1,num_sensors+1):
             sensor_str = f'Sensor{i}'
@@ -121,6 +131,7 @@ def data_sequencing(building_features, vmd):
         return building_features_seq 
 
     if vmd == 0: 
+        num_experiments = len(building_features.keys())
         return np.hstack([building_features[f'Experiment{i+1}'] for i in range(num_experiments)]).squeeze()
         
 
