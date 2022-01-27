@@ -9,7 +9,10 @@ from scipy.signal import welch
 import stumpy
 from stumpy.floss import _cac
 from vmdpy import VMD
-
+import ot 
+import matplotlib.pyplot as plt
+from matplotlib import animation 
+from IPython.display import HTML 
 
 
 def exp_list_process(data_dict, cases, num_healthy):
@@ -120,3 +123,97 @@ def data_sequencing(building_features, vmd):
     if vmd == 0: 
         return np.hstack([building_features[f'Experiment{i+1}'] for i in range(num_experiments)]).squeeze()
         
+
+def animate_regime_change(building_seq, num_modes, stream, regime_change_idxs, start_list_size):
+    '''
+    Input: building_seq data 
+    start_list_size was originally 513*5
+    '''
+    windows = []
+
+    # regime_change_idxs = []
+    # for n_exp in [10,15,20]:
+    #     regime_change_idxs.append(n_exp*513)
+
+    current_x_window = list(np.arange(start_list_size))
+
+
+    new_data = building_seq.T[513*5:]
+
+    for i, t in enumerate(new_data): 
+        
+        #update the window of x values we are currently looking at CAC for
+        current_x_window = current_x_window[1:]
+        current_x_window.append(i+start_list_size)
+
+        cac_list = []
+
+        for mode in range(num_modes):
+            vmd_str = f'vmd{mode}'
+            stream[vmd_str].update(t[mode])
+            cac_list.append(stream[vmd_str].cac_1d_)
+        cac_list = np.array(cac_list)
+
+        if i % 100 == 0:
+            #note any indices of regime changes in this x values window
+            regime_changes_window_idxs = [0]
+            for change in regime_change_idxs:
+                if change in current_x_window:
+                    regime_changes_window_idxs.append(current_x_window.index(change))
+                    
+            #layer 1 pooling over modes
+            sub_sample_rate = 10 #for fast OT processing
+            A = cac_list.T
+            B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
+            M = ot.utils.dist0(B.shape[0]) # Ground Metric 
+            M /= M.max()  # Normalizing ground metric 
+            M*=1e+4 # Tuning ground metric for problem (hyper-param)
+
+            bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+
+            current_cac_1d = np.repeat(bary_wass,10)
+            
+            windows.append((stream['vmd1'].T_, current_cac_1d, regime_changes_window_idxs))
+
+
+    fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
+
+    axs[0].set_xlim((0, len(current_x_window)))
+    Y_MIN = np.min(building_seq[0])
+    Y_MAX = np.max(building_seq[0])
+    axs[0].set_ylim(Y_MIN, Y_MAX)
+    axs[1].set_xlim((0, len(current_x_window)))
+    axs[1].set_ylim((-0.1, 1.1))
+
+    lines = []
+
+    for ax in axs: #create empty structures for each frame
+        line, = ax.plot([], [], lw=2)
+        lines.append(line)
+        line, = ax.plot([],[], linewidth=2, color= 'red')
+        lines.append(line)
+    line, = axs[1].plot([], [], lw=2) # create structure for orange curve
+    lines.append(line)
+
+    def init():
+        for line in lines:
+            line.set_data([], [])
+        return lines
+
+    def animate(window):
+        data_out, cac_out, regime_changes = window
+        lines[0].set_data(np.arange(data_out.shape[0]), data_out)
+        lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
+        rgm_change = max(regime_changes)
+        lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
+        lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
+        return lines
+
+    anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                frames=windows, interval=100,
+                                blit=True)
+
+    anim_out = anim.to_jshtml()
+    plt.close()  # Prevents duplicate image from displaying
+
+    HTML(anim_out)
