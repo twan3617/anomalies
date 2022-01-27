@@ -217,3 +217,26 @@ def animate_regime_change(building_seq, num_modes, stream, regime_change_idxs, s
     plt.close()  # Prevents duplicate image from displaying
 
     HTML(anim_out)
+
+
+def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=True):
+    '''
+    Given a pandas dataframe data (e.g. data_dict['Sensor1']), 
+    return a dataframe with random segments either zeroed out (zero==true) or
+    replaced by a random normal segment horizontally (along the columns).
+    if random==True, provide a random integer length to be zeroed out.
+    num_experiments: number of experiments to zero out in each dataframe
+    '''
+    if rand == True: 
+        a, b = length_zero
+        return_len = np.random.randint(a,b)
+    else: 
+        return_len = length_zero 
+
+    for i in range(num_experiments):
+        rand_pos = np.random.randint(0, length_data - return_len)
+        if zero == True:
+            data.iloc[i,rand_pos:rand_pos+return_len] = 0
+        else: 
+            data.iloc[i,rand_pos:rand_pos+return_len] = np.random.normal(loc=0, scale=1, size=return_len)
+    return data
