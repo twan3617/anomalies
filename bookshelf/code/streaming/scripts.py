@@ -135,99 +135,215 @@ def data_sequencing(building_features, vmd):
         return np.hstack([building_features[f'Experiment{i+1}'] for i in range(num_experiments)]).squeeze()
         
 
-def animate_regime_change(building_seq, num_modes, stream, regime_change_idxs, start_list_size):
+def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_list_size, m, L):
     '''
     Input: building_seq data 
     start_list_size was originally 513*5
     '''
-    windows = []
+    if num_modes > 0: 
 
-    # regime_change_idxs = []
-    # for n_exp in [10,15,20]:
-    #     regime_change_idxs.append(n_exp*513)
+        cac_list = [] #to store the initial cacs for each mode 
 
-    current_x_window = list(np.arange(start_list_size))
+        stream = dict()
 
-
-    new_data = building_seq.T[513*5:]
-
-    for i, t in enumerate(new_data): 
-        
-        #update the window of x values we are currently looking at CAC for
-        current_x_window = current_x_window[1:]
-        current_x_window.append(i+start_list_size)
-
-        cac_list = []
-
-        for mode in range(num_modes):
+        #initialising and also setting up streaming objects for each mode
+        for mode in range(num_modes): 
+            old_data = building_seq[mode][:513*5] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+            mp = stumpy.stump(old_data, m=m)
+            cac_list.append(_cac(mp[:, 3], L, bidirectional=False, excl_factor=1))
             vmd_str = f'vmd{mode}'
-            stream[vmd_str].update(t[mode])
-            cac_list.append(stream[vmd_str].cac_1d_)
-        cac_list = np.array(cac_list)
+            stream[vmd_str] = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
 
-        if i % 100 == 0:
-            #note any indices of regime changes in this x values window
-            regime_changes_window_idxs = [0]
-            for change in regime_change_idxs:
-                if change in current_x_window:
-                    regime_changes_window_idxs.append(current_x_window.index(change))
-                    
-            #layer 1 pooling over modes
-            sub_sample_rate = 10 #for fast OT processing
-            A = cac_list.T
-            B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
-            M = ot.utils.dist0(B.shape[0]) # Ground Metric 
-            M /= M.max()  # Normalizing ground metric 
-            M*=1e+4 # Tuning ground metric for problem (hyper-param)
+        cac_list= np.array(cac_list)
+        #OT layer 1 for initial data ( first five experiments)
+        sub_sample_rate = 10
 
-            bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+        A = cac_list.T
+        B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
+        M = ot.utils.dist0(B.shape[0]) # Ground Metric 
+        M /= M.max()  # Normalizing ground metric 
+        M*=1e+4 # Tuning ground metric for problem (hyper-param)
 
-            current_cac_1d = np.repeat(bary_wass,10)
+        bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+
+        cac_1d = np.repeat(bary_wass,10)
+
+        windows = []
+
+        # regime_change_idxs = []
+        # for n_exp in [10,15,20]:
+        #     regime_change_idxs.append(n_exp*513)
+
+        current_x_window = list(np.arange(start_list_size))
+
+
+        new_data = building_seq.T[start_list_size:]
+
+        for i, t in enumerate(new_data): 
             
-            windows.append((stream['vmd1'].T_, current_cac_1d, regime_changes_window_idxs))
+            #update the window of x values we are currently looking at CAC for
+            current_x_window = current_x_window[1:]
+            current_x_window.append(i+start_list_size)
+
+            cac_list = []
+
+            for mode in range(num_modes):
+                vmd_str = f'vmd{mode}'
+                stream[vmd_str].update(t[mode])
+                cac_list.append(stream[vmd_str].cac_1d_)
+            cac_list = np.array(cac_list)
+
+            if i % 100 == 0:
+                #note any indices of regime changes in this x values window
+                regime_changes_window_idxs = [0]
+                for change in regime_change_idxs:
+                    if change in current_x_window:
+                        regime_changes_window_idxs.append(current_x_window.index(change))
+                        
+                #layer 1 pooling over modes
+                sub_sample_rate = 10 #for fast OT processing
+                A = cac_list.T
+                B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
+                M = ot.utils.dist0(B.shape[0]) # Ground Metric 
+                M /= M.max()  # Normalizing ground metric 
+                M*=1e+4 # Tuning ground metric for problem (hyper-param)
+
+                bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+
+                current_cac_1d = np.repeat(bary_wass,10)
+                
+                windows.append((stream['vmd1'].T_, current_cac_1d, regime_changes_window_idxs))
 
 
-    fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
+        fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
 
-    axs[0].set_xlim((0, len(current_x_window)))
-    Y_MIN = np.min(building_seq[0])
-    Y_MAX = np.max(building_seq[0])
-    axs[0].set_ylim(Y_MIN, Y_MAX)
-    axs[1].set_xlim((0, len(current_x_window)))
-    axs[1].set_ylim((-0.1, 1.1))
+        axs[0].set_xlim((0, len(current_x_window)))
+        Y_MIN = np.min(building_seq[0])
+        Y_MAX = np.max(building_seq[0])
+        axs[0].set_ylim(Y_MIN, Y_MAX)
+        axs[1].set_xlim((0, len(current_x_window)))
+        axs[1].set_ylim((-0.1, 1.1))
 
-    lines = []
+        lines = []
 
-    for ax in axs: #create empty structures for each frame
-        line, = ax.plot([], [], lw=2)
+        for ax in axs: #create empty structures for each frame
+            line, = ax.plot([], [], lw=2)
+            lines.append(line)
+            line, = ax.plot([],[], linewidth=2, color= 'red')
+            lines.append(line)
+        line, = axs[1].plot([], [], lw=2) # create structure for orange curve
         lines.append(line)
-        line, = ax.plot([],[], linewidth=2, color= 'red')
+
+        def init():
+            for line in lines:
+                line.set_data([], [])
+            return lines
+
+        def animate(window):
+            data_out, cac_out, regime_changes = window
+            lines[0].set_data(np.arange(data_out.shape[0]), data_out)
+            lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
+            rgm_change = max(regime_changes)
+            lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
+            lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
+            return lines
+
+        anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                    frames=windows, interval=100,
+                                    blit=True)
+
+        anim_out = anim.to_jshtml()
+        plt.close()  # Prevents duplicate image from displaying
+
+        return HTML(anim_out)
+
+    else:  ### mode == 0
+        old_data = building_seq[:start_list_size]
+        new_data = building_seq[start_list_size:] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+        mp = stumpy.stump(old_data, m=m)
+        cac_1d = _cac(mp[:, 3], L, bidirectional=False, excl_factor=1)  # This is for demo purposes only. Use floss() below!
+        stream = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
+
+        old_data = building_seq[:513*5]
+        new_data = building_seq[513*5:] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+        mp = stumpy.stump(old_data, m=m)
+        cac_1d = _cac(mp[:, 3], L, bidirectional=False, excl_factor=1)  # This is for demo purposes only. Use floss() below!
+        stream = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
+
+        windows = []
+
+        regime_change_idxs = []
+        for n_exp in [10,15,20]:
+            regime_change_idxs.append(n_exp*513)
+
+        current_x_window = list(np.arange(513*5))
+
+        for i, t in enumerate(new_data): 
+            stream.update(t)
+            
+            #update the window of x values we are currently looking at CAC for
+            current_x_window = current_x_window[1:]
+            current_x_window.append(i+513*5)
+            
+            if i % 100 == 0:
+                #note any indices of regime changes in this x values window
+                regime_changes_window_idxs = [0]
+                for change in regime_change_idxs:
+                    if change in current_x_window:
+                        regime_changes_window_idxs.append(current_x_window.index(change))
+                windows.append((stream.T_, stream.cac_1d_, regime_changes_window_idxs))
+                
+        #     if (i+1) % 513*5b == 0:
+
+
+        fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
+
+        axs[0].set_xlim((0, mp.shape[0]))
+        Y_MIN = min(np.min(old_data), np.min(new_data))
+        Y_MAX = max(np.max(old_data), np.max(new_data))
+        axs[0].set_ylim(Y_MIN, Y_MAX)
+        axs[1].set_xlim((0, mp.shape[0]))
+        axs[1].set_ylim((-0.1, 1.1))
+
+        #legend here^ try
+
+        lines = []
+
+        for ax in axs: #create empty structures for each frame
+            line, = ax.plot([], [], lw=2)
+            lines.append(line)
+            line, = ax.plot([],[], linewidth=2, color= 'red')
+            lines.append(line)
+        line, = axs[1].plot([], [], lw=2) # create structure for orange curve
         lines.append(line)
-    line, = axs[1].plot([], [], lw=2) # create structure for orange curve
-    lines.append(line)
 
-    def init():
-        for line in lines:
-            line.set_data([], [])
-        return lines
+        def init():
+            for line in lines:
+                line.set_data([], [])
+            return lines
 
-    def animate(window):
-        data_out, cac_out, regime_changes = window
-        lines[0].set_data(np.arange(data_out.shape[0]), data_out)
-        lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
-        rgm_change = max(regime_changes)
-        lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
-        lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
-        return lines
+        def animate(window):
+            data_out, cac_out, regime_changes = window
+        #     for line, data in zip(lines, [data_out, regime_changes, cac_out, regime_changes, cac_1d]):
+        #         line.set_data(np.arange(data.shape[0]), data)
+            lines[0].set_data(np.arange(data_out.shape[0]), data_out)
+            lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
+        #     lines[4].set_data(np.arange(cac_1d.shape[0]), cac_1d)
+            rgm_change = max(regime_changes)
+            lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
+            lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
+            return lines
 
-    anim = animation.FuncAnimation(fig, animate, init_func=init,
-                                frames=windows, interval=100,
-                                blit=True)
+        anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                    frames=windows, interval=100,
+                                    blit=True)
 
-    anim_out = anim.to_jshtml()
-    plt.close()  # Prevents duplicate image from displaying
+        anim_out = anim.to_jshtml()
+        plt.close()  # Prevents duplicate image from displaying
 
-    HTML(anim_out)
+        return HTML(anim_out)
+
+
 
 
 def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=True):
@@ -238,6 +354,7 @@ def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=Tr
     if random==True, provide a random integer length to be zeroed out.
     num_experiments: number of experiments to zero out in each dataframe
     '''
+    rand_positions = []
     if rand == True: 
         a, b = length_zero
         return_len = np.random.randint(a,b)
@@ -250,4 +367,6 @@ def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=Tr
             data.iloc[i,rand_pos:rand_pos+return_len] = 0
         else: 
             data.iloc[i,rand_pos:rand_pos+return_len] = np.random.normal(loc=0, scale=1, size=return_len)
-    return data
+        rand_positions.append(rand_pos)
+
+    return data, rand_positions
