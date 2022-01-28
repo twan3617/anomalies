@@ -9,7 +9,10 @@ from scipy.signal import welch
 import stumpy
 from stumpy.floss import _cac
 from vmdpy import VMD
-
+import ot 
+import matplotlib.pyplot as plt
+from matplotlib import animation 
+from IPython.display import HTML 
 
 
 def exp_list_process(data_dict, cases, num_healthy):
@@ -42,7 +45,7 @@ def exp_list_process(data_dict, cases, num_healthy):
     
     return df_list 
 
-def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, tol):
+def welch_vmd(df_list, signal_length=8192, nperseg=1024, fs=1600, vmd=0, alpha=0, tau=0, DC=0, init=0, tol=0):
     '''
     Input: 
     data: df_list, a dict with Sensorn as key and all of the data (including labels).
@@ -51,10 +54,12 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
     In terms of the data pipeline, this should be placed after the correct experimental data has been pulled out of Building_Model.mat into df_list. Just iterate over the number of sensors. 
     This gives us flexibility in case we want to experiment with different combinations of normal/anomalous data etc. 
     '''  
-    first_item = next(iter(df_list.values()))
-    num_experiments = len(first_item)
+
     
     if vmd >= 1: 
+        first_item = next(iter(df_list.values()))
+        num_experiments = len(first_item)
+
         num_sensors = len(df_list.keys())
         building_features = dict()
         for sensor_num in range(1,num_sensors+1):
@@ -84,12 +89,18 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
         return building_features
     
     if vmd == 0: 
+        # if df_list contains other things 
+        df_list = df_list.iloc[:,:8192]
+
         building_features = dict()
         welch_list = []
 
+        num_experiments = len(df_list)
+        # note: df_list might be df_list['Sensor1'], say,
+
         for i in range(num_experiments):
             experiment_str = f'Experiment{i+1}'
-            data_row = df_list.iloc[i,:]
+            data_row = df_list.iloc[i,:8192]
             data_row_demeaned = data_row - np.mean(data_row) # Remove "DC" component (i.e. de-mean)
             
             pxx = welch(data_row_demeaned, fs=1600, nperseg=nperseg) # Returns len 2 tuple
@@ -98,13 +109,15 @@ def welch_vmd(df_list, signal_length, nperseg, fs, vmd, alpha, tau, DC, init, to
             building_features[experiment_str] = np.array(welch_list)
 
             welch_list.clear()
+        return building_features
 
 
 def data_sequencing(building_features, vmd):
-    num_sensors= len(building_features.keys())
-    num_experiments = len(building_features['Sensor1'].keys())
 
     if vmd >= 1:
+        num_sensors= len(building_features.keys())
+        num_experiments = len(building_features['Sensor1'].keys())
+
         building_features_seq = dict()
         for i in range(1,num_sensors+1):
             sensor_str = f'Sensor{i}'
@@ -118,5 +131,246 @@ def data_sequencing(building_features, vmd):
         return building_features_seq 
 
     if vmd == 0: 
+        num_experiments = len(building_features.keys())
         return np.hstack([building_features[f'Experiment{i+1}'] for i in range(num_experiments)]).squeeze()
         
+
+def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_list_size, m, L):
+    '''
+    Input: building_seq data 
+    start_list_size was originally 513*5
+    Note: this currently only works for building_seq where building_seq is only of 1 sensor
+    Rewrite this function to produce cacs for flexibility?
+    '''
+    if num_modes > 0: 
+
+        cac_list = [] #to store the initial cacs for each mode 
+
+        stream = dict()
+
+        #initialising and also setting up streaming objects for each mode
+        for mode in range(num_modes): 
+            old_data = building_seq[mode][:start_list_size] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+            mp = stumpy.stump(old_data, m=m)
+            cac_list.append(_cac(mp[:, 3], L, bidirectional=False, excl_factor=1))
+            vmd_str = f'vmd{mode}'
+            stream[vmd_str] = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
+
+        cac_list= np.array(cac_list)
+        #OT layer 1 for initial data ( first five experiments)
+        sub_sample_rate = 10
+
+        A = cac_list.T
+        B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
+        M = ot.utils.dist0(B.shape[0]) # Ground Metric 
+        M /= M.max()  # Normalizing ground metric 
+        M*=1e+4 # Tuning ground metric for problem (hyper-param)
+
+        bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+
+        cac_1d = np.repeat(bary_wass,10)
+
+        windows = []
+
+        # regime_change_idxs = []
+        # for n_exp in [10,15,20]:
+        #     regime_change_idxs.append(n_exp*513)
+
+        current_x_window = list(np.arange(start_list_size))
+
+        new_data = building_seq.T[start_list_size:]
+
+        for i, t in enumerate(new_data): 
+            
+            #update the window of x values we are currently looking at CAC for
+            current_x_window = current_x_window[1:]
+            current_x_window.append(i+start_list_size)
+
+            cac_list = []
+
+            for mode in range(num_modes):
+                vmd_str = f'vmd{mode}'
+                stream[vmd_str].update(t[mode])
+                cac_list.append(stream[vmd_str].cac_1d_)
+            cac_list = np.array(cac_list)
+
+            if i % 100 == 0:
+                #note any indices of regime changes in this x values window
+                regime_changes_window_idxs = [0]
+                for change in regime_change_idxs:
+                    if change in current_x_window:
+                        regime_changes_window_idxs.append(current_x_window.index(change))
+                        
+                #layer 1 pooling over modes
+                sub_sample_rate = 10 #for fast OT processing
+                A = cac_list.T
+                B = A[::sub_sample_rate,:] # Sub-sampling to increase OT processing
+                M = ot.utils.dist0(B.shape[0]) # Ground Metric 
+                M /= M.max()  # Normalizing ground metric 
+                M*=1e+4 # Tuning ground metric for problem (hyper-param)
+
+                bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1) # reg - Entropic Regularization 
+
+                current_cac_1d = np.repeat(bary_wass,10)
+                
+                windows.append((stream['vmd1'].T_, current_cac_1d, regime_changes_window_idxs))
+
+
+        fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
+
+        axs[0].set_xlim((0, len(current_x_window)))
+        Y_MIN = np.min(building_seq[0])
+        Y_MAX = np.max(building_seq[0])
+        axs[0].set_ylim(Y_MIN, Y_MAX)
+        axs[1].set_xlim((0, len(current_x_window)))
+        axs[1].set_ylim((-0.1, 1.1))
+
+        lines = []
+
+        for ax in axs: #create empty structures for each frame
+            line, = ax.plot([], [], lw=2)
+            lines.append(line)
+            line, = ax.plot([],[], linewidth=2, color= 'red')
+            lines.append(line)
+        line, = axs[1].plot([], [], lw=2) # create structure for orange curve
+        lines.append(line)
+
+        def init():
+            for line in lines:
+                line.set_data([], [])
+            return lines
+
+        def animate(window):
+            data_out, cac_out, regime_changes = window
+            lines[0].set_data(np.arange(data_out.shape[0]), data_out)
+            lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
+            rgm_change = max(regime_changes)
+            lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
+            lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
+            return lines
+
+        anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                    frames=windows, interval=100,
+                                    blit=True)
+
+        anim_out = anim.to_jshtml()
+        plt.close()  # Prevents duplicate image from displaying
+
+        return HTML(anim_out)
+
+    else:  ### mode == 0
+        old_data = building_seq[:start_list_size]
+        new_data = building_seq[start_list_size:] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+        mp = stumpy.stump(old_data, m=m)
+        cac_1d = _cac(mp[:, 3], L, bidirectional=False, excl_factor=1)  # This is for demo purposes only. Use floss() below!
+        stream = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
+
+        old_data = building_seq[:513*5]
+        new_data = building_seq[513*5:] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+        mp = stumpy.stump(old_data, m=m)
+        cac_1d = _cac(mp[:, 3], L, bidirectional=False, excl_factor=1)  # This is for demo purposes only. Use floss() below!
+        stream = stumpy.floss(mp, old_data, m=m, L=L, excl_factor=1)
+
+        windows = []
+
+        regime_change_idxs = []
+        for n_exp in [10,15,20]:
+            regime_change_idxs.append(n_exp*513)
+
+        current_x_window = list(np.arange(513*5))
+
+        for i, t in enumerate(new_data): 
+            stream.update(t)
+            
+            #update the window of x values we are currently looking at CAC for
+            current_x_window = current_x_window[1:]
+            current_x_window.append(i+513*5)
+            
+            if i % 100 == 0:
+                #note any indices of regime changes in this x values window
+                regime_changes_window_idxs = [0]
+                for change in regime_change_idxs:
+                    if change in current_x_window:
+                        regime_changes_window_idxs.append(current_x_window.index(change))
+                windows.append((stream.T_, stream.cac_1d_, regime_changes_window_idxs))
+                
+        #     if (i+1) % 513*5b == 0:
+
+
+        fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
+
+        axs[0].set_xlim((0, mp.shape[0]))
+        Y_MIN = min(np.min(old_data), np.min(new_data))
+        Y_MAX = max(np.max(old_data), np.max(new_data))
+        axs[0].set_ylim(Y_MIN, Y_MAX)
+        axs[1].set_xlim((0, mp.shape[0]))
+        axs[1].set_ylim((-0.1, 1.1))
+
+        #legend here^ try
+
+        lines = []
+
+        for ax in axs: #create empty structures for each frame
+            line, = ax.plot([], [], lw=2)
+            lines.append(line)
+            line, = ax.plot([],[], linewidth=2, color= 'red')
+            lines.append(line)
+        line, = axs[1].plot([], [], lw=2) # create structure for orange curve
+        lines.append(line)
+
+        def init():
+            for line in lines:
+                line.set_data([], [])
+            return lines
+
+        def animate(window):
+            data_out, cac_out, regime_changes = window
+        #     for line, data in zip(lines, [data_out, regime_changes, cac_out, regime_changes, cac_1d]):
+        #         line.set_data(np.arange(data.shape[0]), data)
+            lines[0].set_data(np.arange(data_out.shape[0]), data_out)
+            lines[2].set_data(np.arange(cac_out.shape[0]), cac_out)
+        #     lines[4].set_data(np.arange(cac_1d.shape[0]), cac_1d)
+            rgm_change = max(regime_changes)
+            lines[1].set_data([rgm_change,rgm_change],[Y_MIN, Y_MAX])
+            lines[3].set_data([rgm_change,rgm_change],[-0.1, 1.1])
+            return lines
+
+        anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                    frames=windows, interval=100,
+                                    blit=True)
+
+        anim_out = anim.to_jshtml()
+        plt.close()  # Prevents duplicate image from displaying
+
+        return HTML(anim_out)
+
+
+
+
+def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=True):
+    '''
+    Given a pandas dataframe data (e.g. data_dict['Sensor1']), 
+    return a dataframe with random segments either zeroed out (zero==true) or
+    replaced by a random normal segment horizontally (along the columns).
+    if random==True, provide a random integer length to be zeroed out.
+    num_experiments: number of experiments to zero out in each dataframe
+    length_zero = (a,b) (if rand=True) or an integer if anything else 
+    length_data = 8192
+    Chooses random position and a random length of data determined by length_zero to zero out.
+    '''
+    rand_positions = []
+    if rand == True: 
+        a, b = length_zero
+        return_len = np.random.randint(a,b)
+    else: 
+        return_len = length_zero 
+
+    for i in range(num_experiments):
+        rand_pos = np.random.randint(0, length_data - return_len)
+        if zero == True:
+            data.iloc[i,rand_pos:rand_pos+return_len] = 0
+        else: 
+            data.iloc[i,rand_pos:rand_pos+return_len] = np.random.normal(loc=0, scale=1, size=return_len)
+        rand_positions.append(rand_pos)
+
+    return data, rand_positions
