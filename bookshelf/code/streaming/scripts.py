@@ -139,6 +139,8 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
     '''
     Input: building_seq data 
     start_list_size was originally 513*5
+    Note: this currently only works for building_seq where building_seq is only of 1 sensor
+    Rewrite this function to produce cacs for flexibility?
     '''
     if num_modes > 0: 
 
@@ -148,7 +150,7 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
 
         #initialising and also setting up streaming objects for each mode
         for mode in range(num_modes): 
-            old_data = building_seq[mode][:513*5] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
+            old_data = building_seq[mode][:start_list_size] # take the first 5 experiments. There are 25 experiments, with changes occuring in 10, 15, 20 
             mp = stumpy.stump(old_data, m=m)
             cac_list.append(_cac(mp[:, 3], L, bidirectional=False, excl_factor=1))
             vmd_str = f'vmd{mode}'
@@ -175,7 +177,6 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
         #     regime_change_idxs.append(n_exp*513)
 
         current_x_window = list(np.arange(start_list_size))
-
 
         new_data = building_seq.T[start_list_size:]
 
@@ -353,6 +354,9 @@ def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=Tr
     replaced by a random normal segment horizontally (along the columns).
     if random==True, provide a random integer length to be zeroed out.
     num_experiments: number of experiments to zero out in each dataframe
+    length_zero = (a,b) (if rand=True) or an integer if anything else 
+    length_data = 8192
+    Chooses random position and a random length of data determined by length_zero to zero out.
     '''
     rand_positions = []
     if rand == True: 
