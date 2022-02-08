@@ -135,7 +135,7 @@ def data_sequencing(building_features, vmd):
         return np.hstack([building_features[f'Experiment{i+1}'] for i in range(num_experiments)]).squeeze()
         
 
-def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_list_size, m, L):
+def animate_regime_change(building_seq, filename, num_modes, regime_change_idxs, start_list_size, m, L):
     '''
     Input: building_seq data 
     start_list_size was originally 513*5
@@ -253,9 +253,13 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
                                     frames=windows, interval=100,
                                     blit=True)
 
+        writergif = animation.PillowWriter(fps = 10)
+        anim.save(filename,writer=writergif)
+
         anim_out = anim.to_jshtml()
         plt.close()  # Prevents duplicate image from displaying
 
+        
         return HTML(anim_out)
 
     else:  ### mode == 0
@@ -293,8 +297,8 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
                     if change in current_x_window:
                         regime_changes_window_idxs.append(current_x_window.index(change))
                 windows.append((stream.T_, stream.cac_1d_, regime_changes_window_idxs))
+                # window contains tuples of the form (time_series, cac, regime_changes_window_idxs)
                 
-        #     if (i+1) % 513*5b == 0:
 
 
         fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
@@ -339,12 +343,73 @@ def animate_regime_change(building_seq, num_modes, regime_change_idxs, start_lis
                                     frames=windows, interval=100,
                                     blit=True)
 
+        writergif = animation.PillowWriter(fps = 10)
+        anim.save(filename,writer=writergif)
+
         anim_out = anim.to_jshtml()
         plt.close()  # Prevents duplicate image from displaying
 
         return HTML(anim_out)
 
+def compute_bary_cacs(building_features_seq, subsample_rate, num_sensors, num_modes):
+    '''
+    Given input building_features_seq of the form 
+    dict: {sensor_num: (vmd1, ..., vmd_num_modes)}, return a dict {sensor_num: cac}, 
+    where cac is the cacs of the vmds all barycentered together
+    Give this an "average" option?
+    '''
+    cac_dict = dict()
+    for i in range(num_sensors):
+        bary_cac = []
+        sensor_str = f'Sensor{i+1}'
+        for j in range(num_modes):
+            bary_cac.append(building_features_seq[sensor_str][j])
+        bary_cac = np.array(bary_cac)
 
+        A = bary_cac.T
+        B = A[::subsample_rate, :]
+        M = ot.utils.dist0(B.shape[0])
+        M /= M.max()
+        M*=1e4
+
+        bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1)
+        cac_dict[sensor_str] = bary_wass
+    return cac_dict
+
+
+def final_cac(building_cacs, num_sensors, subsample_rate, average):
+    '''
+    Given a dict {sensor_num: cac}, either barycenter the cacs together or average. 
+    Return an array of cac values. 
+    Give a subsample rate of 1 if compute_bary_cacs was used.
+    '''
+    if average == True: 
+        # compute averages of cacs 
+        AVG = []
+        for i in range(num_sensors):
+            sensor_str = f'Sensor{i+1}'
+            AVG.append(building_cacs[sensor_str])
+        final_AVG = np.array(AVG).mean(axis=0)
+
+        return final_AVG
+
+    else: 
+    # cac together 
+        OT = []
+        for i in range(num_sensors):
+            sensor_str = f'Sensor{i+1}'
+            OT.append(building_cacs[sensor_str])
+        OT = np.array(OT)
+        
+        A = OT.T
+        B = A[::subsample_rate, :]
+        M = ot.utils.dist0(B.shape[0])
+        M /= M.max()
+        M*=1e4
+
+        final_OT = ot.barycenter_unbalanced(B, M, reg=2e-4, reg_m=9e-4)
+
+        return final_OT
 
 
 def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=True):
@@ -374,3 +439,20 @@ def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=Tr
         rand_positions.append(rand_pos)
 
     return data, rand_positions
+
+
+def temporal_shift(data, shift, num_experiments):
+    '''Given a pandas dataframe data (e.g. data_dict['Sensor1']), 
+    return a dataframe with experiments shifted by :int shift. 
+    If shift is a 2-tuple (a,b), randomly choose a value in [a,b] to shift each experiment 
+    '''
+    shifts = []
+    for i in range(num_experiments):
+        if type(shift) == tuple: 
+            shift_val = np.random.randint(shift[0], shift[1])
+        else:
+            shift_val = shift
+        shifts.append(shift_val)
+        data.iloc[i,shift_val:data.shape[1]] = data.iloc[i,:data.shape[1]-shift_val]
+        data.iloc[i,:shift_val] = 0 
+    return data, shifts
