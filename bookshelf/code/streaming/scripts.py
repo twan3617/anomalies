@@ -441,7 +441,7 @@ def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=Tr
     return data, rand_positions
 
 
-def temporal_shift(data, shift, num_experiments):
+def temporal_shift(data, data_length, shift, num_experiments):
     '''Given a pandas dataframe data (e.g. data_dict['Sensor1']), 
     return a dataframe with experiments shifted by :int shift. 
     If shift is a 2-tuple (a,b), randomly choose a value in [a,b] to shift each experiment 
@@ -453,6 +453,6 @@ def temporal_shift(data, shift, num_experiments):
         else:
             shift_val = shift
         shifts.append(shift_val)
-        data.iloc[i,shift_val:data.shape[1]] = data.iloc[i,:data.shape[1]-shift_val]
+        data.iloc[i,shift_val:data_length] = data.iloc[i,:data_length-shift_val]
         data.iloc[i,:shift_val] = 0 
     return data, shifts
