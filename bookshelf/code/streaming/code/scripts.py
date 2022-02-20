@@ -229,6 +229,64 @@ def animate_regime_change(building_seq, num_modes, stream, regime_change_idxs, s
 
     HTML(anim_out)
 
+def compute_bary_cacs(building_features_seq, subsample_rate, num_sensors, num_modes):
+    '''
+    Given input building_features_seq of the form 
+    dict: {sensor_num: (vmd1, ..., vmd_num_modes)}, return a dict {sensor_num: cac}, 
+    where cac is the cacs of the vmds all barycentered together
+    Give this an "average" option?
+    '''
+    cac_dict = dict()
+    for i in range(num_sensors):
+        bary_cac = []
+        sensor_str = f'Sensor{i+1}'
+        for j in range(num_modes):
+            bary_cac.append(building_features_seq[sensor_str][j])
+        bary_cac = np.array(bary_cac)
+
+        A = bary_cac.T
+        B = A[::subsample_rate, :]
+        M = ot.utils.dist0(B.shape[0])
+        M /= M.max()
+        M*=1e4
+
+        bary_wass = ot.barycenter_unbalanced(B, M, reg=5e-4, reg_m=1e-1)
+        cac_dict[sensor_str] = bary_wass
+    return cac_dct
+
+def final_cac(building_cacs, subsample_rate, num_sensors, average):
+    '''
+    Given a dict {sensor_num: cac}, either barycenter the cacs together or average. 
+    Return an array of cac values. 
+    '''
+    if average == True: 
+        # compute averages of cacs 
+        AVG = []
+        for i in range(num_sensors):
+            sensor_str = f'Sensor{i+1}'
+            AVG.append(building_cacs[sensor_str])
+        final_AVG = np.array(AVG).mean(axis=0)
+
+        return final_AVG
+
+    else: 
+    # cac together 
+        OT = []
+        for i in range(num_sensors):
+            sensor_str = f'Sensor{i+1}'
+            OT.append(building_cacs[sensor_str])
+        OT = np.array(OT)
+        
+        A = OT.T
+        B = A[::subsample_rate, :]
+        M = ot.utils.dist0(B.shape[0])
+        M /= M.max()
+        M*=1e4
+
+        final_OT = ot.barycenter_unbalanced(B, M, reg=2e-4, reg_m=9e-4)
+
+        return final_OT
+
 def animate_regime_change_from_scratch(building_seq, regime_change_idxs, start_list_size, m, L):
     '''
     Input: a time series in np.array form, with time along the first dimension
@@ -351,6 +409,7 @@ def animate_regime_change_from_scratch(building_seq, regime_change_idxs, start_l
     # plt.close()  # Prevents duplicate image from displaying
     #
     # HTML(anim_out)
+
 
 def zero_out(data, length_zero, length_data, num_experiments, zero=True, rand=True):
     '''
