@@ -331,6 +331,18 @@ def animate_regime_change_from_scratch(building_seq, regime_change_idxs, start_l
     anim = animation.FuncAnimation(fig, animate, init_func=init,
                                    frames=windows, interval=100,
                                    blit=True)
+    plt.close()
+    print('''
+    to save output (alias anim):
+    writergif = animation.PillowWriter(fps = 10)
+    anim.save('fake-healthytest1repeated-welchonly-10fps.gif',writer=writergif)
+    to display output:
+    anim_out = anim.to_jshtml()
+    plt.close()  # Prevents duplicate image from displaying
+    if os.path.exists("None0000000.png"):
+        os.remove("None0000000.png")  # Delete rogue temp file
+    HTML(anim_out)
+    ''')
     return anim
 
 
